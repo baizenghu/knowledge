@@ -1,0 +1,16 @@
+{
+  "name": "@octopus/knowledge-contracts",
+  "version": "0.1.0",
+  "description": "Shared contracts for Octopus enterprise knowledge service",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}

@@ -1,0 +1,485 @@
+generator client {
+  provider = "prisma-client-js"
+  // 单仓库多 schema:knowledge 独立生成到本地路径,避免与 root prisma/ 共享
+  // node_modules/.prisma/client 导致 model 互相覆盖 (root 没 KnowledgeSpace
+  // 就会让 client.knowledgeSpace = undefined,worker/GC 全 crash)。
+  output = "./generated/client"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("KNOWLEDGE_DATABASE_URL")
+}
+
+model KnowledgeSpace {
+  spaceId        String    @id @map("space_id") @db.VarChar(64)
+  sourceSystemId String    @map("source_system_id") @db.VarChar(64)
+  tenantId       String    @map("tenant_id") @db.VarChar(128)
+  type           String    @db.VarChar(32)
+  name           String    @db.VarChar(255)
+  description    String?   @db.Text
+  ownerType      String    @map("owner_type") @db.VarChar(32)
+  ownerId        String    @map("owner_id") @db.VarChar(128)
+  defaultAcl     Json?     @map("default_acl")
+  status         String    @default("active") @db.VarChar(32)
+  createdBy      String    @map("created_by") @db.VarChar(128)
+  updatedBy      String?   @map("updated_by") @db.VarChar(128)
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  // 外部索引清理状态 — 三个外部资源独立状态机，由 SpaceDeletionService 维护
+  // 取值: 'ok' | 'pending' | 'running' | 'failed'
+  // 每个 target 独立持有 attempts / nextRunAt / errorCode / errorMessage，避免一个 target
+  // 的失败/退避被另一个 target 覆盖（P0-2 + P1-7：单字段共享会导致 qdrant 60s 重试被
+  // object_storage 30 天 nextRunAt 覆盖）。
+  cleanupQdrantStatus        String    @default("ok") @map("cleanup_qdrant_status") @db.VarChar(16)
+  cleanupFulltextStatus      String    @default("ok") @map("cleanup_fulltext_status") @db.VarChar(16)
+  cleanupObjectStorageStatus String    @default("ok") @map("cleanup_object_storage_status") @db.VarChar(16)
+
+  cleanupQdrantAttempts        Int       @default(0) @map("cleanup_qdrant_attempts")
+  cleanupQdrantNextRunAt       DateTime? @map("cleanup_qdrant_next_run_at")
+  cleanupQdrantErrorCode       String?   @map("cleanup_qdrant_error_code")    @db.VarChar(64)
+  cleanupQdrantErrorMessage    String?   @map("cleanup_qdrant_error_message") @db.Text
+
+  cleanupFulltextAttempts      Int       @default(0) @map("cleanup_fulltext_attempts")
+  cleanupFulltextNextRunAt     DateTime? @map("cleanup_fulltext_next_run_at")
+  cleanupFulltextErrorCode     String?   @map("cleanup_fulltext_error_code")    @db.VarChar(64)
+  cleanupFulltextErrorMessage  String?   @map("cleanup_fulltext_error_message") @db.Text
+
+  cleanupObjectStorageAttempts     Int       @default(0) @map("cleanup_object_storage_attempts")
+  cleanupObjectStorageNextRunAt    DateTime? @map("cleanup_object_storage_next_run_at")
+  cleanupObjectStorageErrorCode    String?   @map("cleanup_object_storage_error_code")    @db.VarChar(64)
+  cleanupObjectStorageErrorMessage String?   @map("cleanup_object_storage_error_message") @db.Text
+
+  // 三 target 共用「最近一次任何 target 活动时间」用于 admin 维护页排序，够用，不拆。
+  cleanupLastAttemptAt       DateTime? @map("cleanup_last_attempt_at")
+
+  documents KnowledgeDocument[]
+
+  @@unique([sourceSystemId, tenantId, spaceId])
+  @@index([sourceSystemId, tenantId, type, status])
+  @@index([sourceSystemId, tenantId, ownerType, ownerId])
+  @@index([sourceSystemId, tenantId, deletedAt])
+  // GC worker 扫描索引：每 target 独立 (status, nextRunAt) 才能精准定位"qdrant pending 且
+  // 已到重试时间"而不被其他 target 的 nextRunAt 干扰。
+  // 索引必须带 source_system_id + tenant_id 前缀，否则多租户共享服务下会跨段扫描。
+  @@index([sourceSystemId, tenantId, cleanupQdrantStatus, cleanupQdrantNextRunAt])
+  @@index([sourceSystemId, tenantId, cleanupFulltextStatus, cleanupFulltextNextRunAt])
+  @@index([sourceSystemId, tenantId, cleanupObjectStorageStatus, cleanupObjectStorageNextRunAt])
+  @@map("knowledge_spaces")
+}
+
+model KnowledgeDocument {
+  documentId           String    @id @map("document_id") @db.VarChar(64)
+  sourceSystemId       String    @map("source_system_id") @db.VarChar(64)
+  tenantId             String    @map("tenant_id") @db.VarChar(128)
+  spaceId              String    @map("space_id") @db.VarChar(64)
+  title                String    @db.VarChar(512)
+  documentType         String?   @map("document_type") @db.VarChar(64)
+  status               String    @default("queued") @db.VarChar(32)
+  visibilityStatus     String    @default("hidden") @map("visibility_status") @db.VarChar(32)
+  currentVersionId     String?   @map("current_version_id") @db.VarChar(64)
+  currentVersionNumber Int?      @map("current_version_number")
+  aclHash              String    @map("acl_hash") @db.VarChar(64)
+  aclVersion           Int       @default(1) @map("acl_version")
+  metadata             Json?
+  tags                 Json?
+  sourceFileId         String?   @map("source_file_id") @db.VarChar(64)
+  sourceFilename       String?   @map("source_filename") @db.VarChar(512)
+  sourceMimeType       String?   @map("source_mime_type") @db.VarChar(128)
+  sourceSha256         String?   @map("source_sha256") @db.Char(64)
+  createdBy            String    @map("created_by") @db.VarChar(128)
+  updatedBy            String?   @map("updated_by") @db.VarChar(128)
+  deletedAt            DateTime? @map("deleted_at")
+  searchableAt         DateTime? @map("searchable_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  space         KnowledgeSpace            @relation(fields: [spaceId], references: [spaceId], onDelete: Restrict)
+  versions      KnowledgeDocumentVersion[]
+  assets        KnowledgeAsset[]
+  chunks        KnowledgeChunk[]
+  anchors       KnowledgeCitationAnchor[]
+  aclPrincipals KnowledgeAclPrincipal[]
+  jobs          KnowledgeJob[]
+
+  @@unique([sourceSystemId, tenantId, documentId])
+  @@index([sourceSystemId, tenantId, spaceId, status])
+  @@index([sourceSystemId, tenantId, visibilityStatus, deletedAt])
+  @@index([sourceSystemId, tenantId, aclHash, aclVersion])
+  @@index([sourceSystemId, tenantId, sourceSha256])
+  @@index([sourceSystemId, tenantId, currentVersionId])
+  @@map("knowledge_documents")
+}
+
+model KnowledgeDocumentVersion {
+  versionId        String    @id @map("version_id") @db.VarChar(64)
+  sourceSystemId   String    @map("source_system_id") @db.VarChar(64)
+  tenantId         String    @map("tenant_id") @db.VarChar(128)
+  documentId       String    @map("document_id") @db.VarChar(64)
+  versionNumber    Int       @map("version_number")
+  status           String    @default("queued") @db.VarChar(32)
+  parserName       String?   @map("parser_name") @db.VarChar(64)
+  parserVersion    String?   @map("parser_version") @db.VarChar(64)
+  parserProfile    String?   @map("parser_profile") @db.VarChar(128)
+  parserConfigHash String?   @map("parser_config_hash") @db.VarChar(128)
+  degraded         Boolean   @default(false)
+  degradedReason   String?   @map("degraded_reason") @db.VarChar(255)
+  canonicalJsonUri String?   @map("canonical_json_uri") @db.VarChar(1024)
+  markdownUri      String?   @map("markdown_uri") @db.VarChar(1024)
+  pageCount        Int?      @map("page_count")
+  language         String?   @db.VarChar(32)
+  contentSha256    String    @map("content_sha256") @db.Char(64)
+  textSha256       String?   @map("text_sha256") @db.Char(64)
+  chunkProfile     String?   @map("chunk_profile") @db.VarChar(128)
+  embeddingModel   String?   @map("embedding_model") @db.VarChar(128)
+  embeddingVersion String?   @map("embedding_version") @db.VarChar(128)
+  indexVersion     String?   @map("index_version") @db.VarChar(64)
+  errorCode        String?   @map("error_code") @db.VarChar(64)
+  errorMessage     String?   @map("error_message") @db.Text
+  createdBy        String    @map("created_by") @db.VarChar(128)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  searchableAt     DateTime? @map("searchable_at")
+
+  document KnowledgeDocument          @relation(fields: [documentId], references: [documentId], onDelete: Cascade)
+  assets   KnowledgeAsset[]
+  chunks   KnowledgeChunk[]
+  anchors  KnowledgeCitationAnchor[]
+
+  @@unique([sourceSystemId, tenantId, versionId])
+  @@unique([sourceSystemId, tenantId, documentId, versionNumber])
+  @@index([sourceSystemId, tenantId, documentId, status])
+  @@index([sourceSystemId, tenantId, contentSha256, parserConfigHash])
+  @@index([sourceSystemId, tenantId, embeddingModel, chunkProfile])
+  @@map("knowledge_document_versions")
+}
+
+model KnowledgeAsset {
+  assetId        String    @id @map("asset_id") @db.VarChar(64)
+  sourceSystemId String    @map("source_system_id") @db.VarChar(64)
+  tenantId       String    @map("tenant_id") @db.VarChar(128)
+  documentId     String?   @map("document_id") @db.VarChar(64)
+  versionId      String?   @map("version_id") @db.VarChar(64)
+  type           String    @db.VarChar(64)
+  uri            String    @db.VarChar(1024)
+  sha256         String    @db.Char(64)
+  mimeType       String?   @map("mime_type") @db.VarChar(128)
+  sizeBytes      BigInt?   @map("size_bytes")
+  pageNo         Int?      @map("page_no")
+  bbox           Json?
+  metadata       Json?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  document KnowledgeDocument?        @relation(fields: [documentId], references: [documentId], onDelete: Cascade)
+  version  KnowledgeDocumentVersion? @relation(fields: [versionId], references: [versionId], onDelete: Cascade)
+
+  @@unique([sourceSystemId, tenantId, assetId])
+  // 内容寻址去重按「版本内」生效：同一 version 里同 (sha256, type) 只存一行，
+  // 让 ingest 重试幂等；不同 version/文档可持有相同内容（assetId 仍随机、全局唯一）。
+  @@unique([sourceSystemId, tenantId, versionId, sha256, type], map: "knowledge_assets_version_content_key")
+  @@index([sourceSystemId, tenantId, documentId, versionId])
+  @@index([sourceSystemId, tenantId, type, createdAt])
+  @@map("knowledge_assets")
+}
+
+model KnowledgeChunk {
+  chunkId          String    @id @map("chunk_id") @db.VarChar(64)
+  sourceSystemId   String    @map("source_system_id") @db.VarChar(64)
+  tenantId         String    @map("tenant_id") @db.VarChar(128)
+  spaceId          String    @map("space_id") @db.VarChar(64)
+  documentId       String    @map("document_id") @db.VarChar(64)
+  versionId        String    @map("version_id") @db.VarChar(64)
+  versionNumber    Int       @map("version_number")
+  chunkIndex       Int       @map("chunk_index")
+  status           String    @default("active") @db.VarChar(32)
+  text             String    @db.LongText
+  textHash         String    @map("text_hash") @db.Char(64)
+  tokenCount       Int?      @map("token_count")
+  nodeIds          Json      @map("node_ids")
+  headingPath      Json?     @map("heading_path")
+  pageStart        Int?      @map("page_start")
+  pageEnd          Int?      @map("page_end")
+  bboxRefs         Json?     @map("bbox_refs")
+  aclHash          String    @map("acl_hash") @db.VarChar(64)
+  aclVersion       Int       @map("acl_version")
+  /**
+   * Small-to-Big retrieval: stable hash of (versionId, heading_path). Indexed
+   * with tenant scope for cheap section-level hydration after rerank.
+   */
+  sectionId        String?   @map("section_id") @db.VarChar(64)
+  embeddingModel   String?   @map("embedding_model") @db.VarChar(128)
+  embeddingVersion String?   @map("embedding_version") @db.VarChar(128)
+  vectorPointId    String?   @map("vector_point_id") @db.VarChar(128)
+  fulltextDocId    String?   @map("fulltext_doc_id") @db.VarChar(128)
+  metadata         Json?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  document KnowledgeDocument          @relation(fields: [documentId], references: [documentId], onDelete: Cascade)
+  version  KnowledgeDocumentVersion   @relation(fields: [versionId], references: [versionId], onDelete: Cascade)
+  anchors  KnowledgeCitationAnchor[]
+
+  @@unique([sourceSystemId, tenantId, chunkId])
+  @@unique([sourceSystemId, tenantId, versionId, chunkIndex])
+  @@unique([sourceSystemId, tenantId, vectorPointId])
+  @@index([sourceSystemId, tenantId, spaceId, status], map: "knowledge_chunks_space_status_idx")
+  @@index([sourceSystemId, tenantId, documentId, versionId])
+  @@index([sourceSystemId, tenantId, aclHash, aclVersion, status])
+  @@index([sourceSystemId, tenantId, deletedAt])
+  @@index([sourceSystemId, tenantId, sectionId], map: "knowledge_chunks_section_idx")
+  @@map("knowledge_chunks")
+}
+
+model KnowledgeCitationAnchor {
+  anchorId       String   @id @map("anchor_id") @db.VarChar(64)
+  sourceSystemId String   @map("source_system_id") @db.VarChar(64)
+  tenantId       String   @map("tenant_id") @db.VarChar(128)
+  documentId     String   @map("document_id") @db.VarChar(64)
+  versionId      String   @map("version_id") @db.VarChar(64)
+  spaceId        String?  @map("space_id") @db.VarChar(64)
+  aclHash        String?  @map("acl_hash") @db.VarChar(64)
+  aclVersion     Int?     @map("acl_version")
+  chunkId        String?  @map("chunk_id") @db.VarChar(64)
+  nodeId         String?  @map("node_id") @db.VarChar(128)
+  nodeIds        Json?    @map("node_ids")
+  pageNo         Int?     @map("page_no")
+  bbox           Json?
+  charStart      Int?     @map("char_start")
+  charEnd        Int?     @map("char_end")
+  charSpan       Json?    @map("char_span")
+  headingPath    Json?    @map("heading_path")
+  assetId        String?  @map("asset_id") @db.VarChar(64)
+  sourceFileId   String?  @map("source_file_id") @db.VarChar(64)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  document KnowledgeDocument        @relation(fields: [documentId], references: [documentId], onDelete: Cascade)
+  version  KnowledgeDocumentVersion @relation(fields: [versionId], references: [versionId], onDelete: Cascade)
+  chunk    KnowledgeChunk?          @relation(fields: [chunkId], references: [chunkId], onDelete: SetNull)
+
+  @@unique([sourceSystemId, tenantId, anchorId])
+  @@index([sourceSystemId, tenantId, documentId, versionId])
+  @@index([sourceSystemId, tenantId, chunkId])
+  @@index([sourceSystemId, tenantId, pageNo])
+  @@map("knowledge_citation_anchors")
+}
+
+model KnowledgeAclSnapshot {
+  aclHash        String   @map("acl_hash") @db.VarChar(64)
+  sourceSystemId String   @map("source_system_id") @db.VarChar(64)
+  tenantId       String   @map("tenant_id") @db.VarChar(128)
+  canonicalJson  Json     @map("canonical_json")
+  sha256         String   @db.Char(64)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  principals KnowledgeAclPrincipal[]
+
+  @@id([sourceSystemId, tenantId, aclHash])
+  @@unique([sourceSystemId, tenantId, sha256])
+  @@index([sourceSystemId, tenantId, createdAt])
+  @@map("knowledge_acl_snapshots")
+}
+
+model KnowledgeAclPrincipal {
+  sourceSystemId String    @map("source_system_id") @db.VarChar(64)
+  tenantId       String    @map("tenant_id") @db.VarChar(128)
+  documentId     String    @map("document_id") @db.VarChar(64)
+  aclHash        String    @map("acl_hash") @db.VarChar(64)
+  aclVersion     Int       @map("acl_version")
+  permission     String    @db.VarChar(16)
+  principalType  String    @map("principal_type") @db.VarChar(32)
+  principalId    String    @map("principal_id") @db.VarChar(128)
+  effectiveFrom  DateTime? @map("effective_from")
+  effectiveTo    DateTime? @map("effective_to")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  document KnowledgeDocument    @relation(fields: [documentId], references: [documentId], onDelete: Cascade)
+  snapshot KnowledgeAclSnapshot @relation(fields: [sourceSystemId, tenantId, aclHash], references: [sourceSystemId, tenantId, aclHash], onDelete: Cascade)
+
+  @@id([sourceSystemId, tenantId, documentId, aclVersion, permission, principalType, principalId])
+  @@index([sourceSystemId, tenantId, permission, principalType, principalId])
+  @@index([sourceSystemId, tenantId, documentId, aclVersion])
+  @@index([sourceSystemId, tenantId, aclHash])
+  @@map("knowledge_acl_principals")
+}
+
+model KnowledgeUploadSession {
+  uploadId      String    @id @map("upload_id") @db.VarChar(64)
+  sourceSystemId String   @map("source_system_id") @db.VarChar(64)
+  tenantId      String    @map("tenant_id") @db.VarChar(128)
+  spaceId       String    @map("space_id") @db.VarChar(64)
+  assetId       String    @map("asset_id") @db.VarChar(64)
+  objectUri     String    @map("object_uri") @db.VarChar(1024)
+  filename      String    @db.VarChar(512)
+  mimeType      String    @map("mime_type") @db.VarChar(128)
+  sizeBytes     BigInt    @map("size_bytes")
+  claimedSha256 String?   @map("claimed_sha256") @db.Char(64)
+  actualSha256  String?   @map("actual_sha256") @db.Char(64)
+  status        String    @default("issued") @db.VarChar(32)
+  issuedBy      String    @map("issued_by") @db.VarChar(128)
+  expiresAt     DateTime  @map("expires_at")
+  consumedAt    DateTime? @map("consumed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@unique([sourceSystemId, tenantId, uploadId])
+  @@index([sourceSystemId, tenantId, spaceId, status])
+  @@index([sourceSystemId, tenantId, expiresAt])
+  @@index([sourceSystemId, tenantId, assetId])
+  @@index([sourceSystemId, tenantId, spaceId, claimedSha256, status], map: "knowledge_upload_sessions_claimed_hash_idx")
+  @@map("knowledge_upload_sessions")
+}
+
+model KnowledgeJob {
+  jobId          String    @id @map("job_id") @db.VarChar(64)
+  sourceSystemId String    @map("source_system_id") @db.VarChar(64)
+  tenantId       String    @map("tenant_id") @db.VarChar(128)
+  type           String    @db.VarChar(32)
+  status         String    @default("queued") @db.VarChar(32)
+  priority       Int       @default(100)
+  spaceId        String?   @map("space_id") @db.VarChar(64)
+  documentId     String?   @map("document_id") @db.VarChar(64)
+  versionId      String?   @map("version_id") @db.VarChar(64)
+  idempotencyKey String?   @map("idempotency_key") @db.VarChar(255)
+  payload        Json?
+  progress       Json?
+  attempt        Int       @default(0)
+  maxRetries     Int       @default(3) @map("max_retries")
+  lockedBy       String?   @map("locked_by") @db.VarChar(128)
+  lockedAt       DateTime? @map("locked_at")
+  runAfterAt     DateTime  @default(now()) @map("run_after_at")
+  startedAt      DateTime? @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  deadlineAt     DateTime? @map("deadline_at")
+  deadLetterAt   DateTime? @map("dead_letter_at")
+  errorCode      String?   @map("error_code") @db.VarChar(64)
+  errorMessage   String?   @map("error_message") @db.Text
+  degradedReason String?   @map("degraded_reason") @db.VarChar(255)
+  createdBy      String?   @map("created_by") @db.VarChar(128)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  document KnowledgeDocument? @relation(fields: [documentId], references: [documentId], onDelete: SetNull)
+
+  @@unique([sourceSystemId, tenantId, jobId])
+  @@index([sourceSystemId, tenantId, status, priority, runAfterAt])
+  @@index([sourceSystemId, tenantId, type, status])
+  @@index([sourceSystemId, tenantId, documentId, status])
+  @@index([sourceSystemId, tenantId, lockedAt])
+  @@index([sourceSystemId, tenantId, deadLetterAt])
+  @@map("knowledge_jobs")
+}
+
+model KnowledgeIdempotencyKey {
+  keyHash       String   @id @map("key_hash") @db.Char(64)
+  sourceSystemId String  @map("source_system_id") @db.VarChar(64)
+  tenantId      String   @map("tenant_id") @db.VarChar(128)
+  rawKey        String   @map("raw_key") @db.VarChar(255)
+  requestHash   String   @map("request_hash") @db.Char(64)
+  method        String   @db.VarChar(16)
+  path          String   @db.VarChar(512)
+  responseJson  Json?    @map("response_json")
+  resourceType  String?  @map("resource_type") @db.VarChar(64)
+  resourceId    String?  @map("resource_id") @db.VarChar(64)
+  expiresAt     DateTime @map("expires_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([sourceSystemId, tenantId, keyHash])
+  @@index([sourceSystemId, tenantId, expiresAt])
+  @@map("knowledge_idempotency_keys")
+}
+
+model KnowledgeReindexPlan {
+  planId          String    @id @map("plan_id") @db.VarChar(64)
+  sourceSystemId  String    @map("source_system_id") @db.VarChar(64)
+  tenantId        String    @map("tenant_id") @db.VarChar(128)
+  documentId      String    @map("document_id") @db.VarChar(64)
+  jobId           String    @map("job_id") @db.VarChar(64)
+  mode            String    @db.VarChar(32)
+  status          String    @default("queued") @db.VarChar(32)
+  oldIndexVersion String?   @map("old_index_version") @db.VarChar(64)
+  newIndexVersion String?   @map("new_index_version") @db.VarChar(64)
+  embeddingModel  String?   @map("embedding_model") @db.VarChar(128)
+  chunkProfile    String?   @map("chunk_profile") @db.VarChar(128)
+  promotedAt      DateTime? @map("promoted_at")
+  rolledBackAt    DateTime? @map("rolled_back_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([sourceSystemId, tenantId, planId])
+  @@index([sourceSystemId, tenantId, documentId, status])
+  @@index([sourceSystemId, tenantId, jobId])
+  @@map("knowledge_reindex_plans")
+}
+
+model KnowledgeEvaluationDataset {
+  datasetId      String   @id @map("dataset_id") @db.VarChar(64)
+  sourceSystemId String   @map("source_system_id") @db.VarChar(64)
+  tenantId       String   @map("tenant_id") @db.VarChar(128)
+  name           String   @db.VarChar(255)
+  version        String   @db.VarChar(64)
+  description    String?  @db.Text
+  storageUri     String?  @map("storage_uri") @db.VarChar(1024)
+  manifest       Json?
+  createdBy      String   @map("created_by") @db.VarChar(128)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  runs KnowledgeEvaluationRun[]
+
+  @@unique([sourceSystemId, tenantId, datasetId])
+  @@unique([sourceSystemId, tenantId, name, version])
+  @@index([sourceSystemId, tenantId, createdAt])
+  @@map("knowledge_evaluation_datasets")
+}
+
+model KnowledgeEvaluationRun {
+  runId          String    @id @map("run_id") @db.VarChar(64)
+  sourceSystemId String    @map("source_system_id") @db.VarChar(64)
+  tenantId       String    @map("tenant_id") @db.VarChar(128)
+  datasetId      String    @map("dataset_id") @db.VarChar(64)
+  status         String    @default("queued") @db.VarChar(32)
+  parserProfile  String?   @map("parser_profile") @db.VarChar(128)
+  embeddingModel String?   @map("embedding_model") @db.VarChar(128)
+  chunkProfile   String?   @map("chunk_profile") @db.VarChar(128)
+  metrics        Json?
+  reportUri      String?   @map("report_uri") @db.VarChar(1024)
+  errorCode      String?   @map("error_code") @db.VarChar(64)
+  errorMessage   String?   @map("error_message") @db.Text
+  createdBy      String    @map("created_by") @db.VarChar(128)
+  startedAt      DateTime? @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  dataset KnowledgeEvaluationDataset @relation(fields: [datasetId], references: [datasetId], onDelete: Restrict)
+
+  @@unique([sourceSystemId, tenantId, runId])
+  @@index([sourceSystemId, tenantId, datasetId, status])
+  @@index([sourceSystemId, tenantId, createdAt])
+  @@map("knowledge_evaluation_runs")
+}
+
+model KnowledgeAuditEvent {
+  eventId        BigInt   @id @default(autoincrement()) @map("event_id")
+  sourceSystemId String   @map("source_system_id") @db.VarChar(64)
+  tenantId       String   @map("tenant_id") @db.VarChar(128)
+  userId         String?  @map("user_id") @db.VarChar(128)
+  requestId      String?  @map("request_id") @db.VarChar(128)
+  action         String   @db.VarChar(128)
+  resourceType   String?  @map("resource_type") @db.VarChar(64)
+  resourceId     String?  @map("resource_id") @db.VarChar(64)
+  success        Boolean  @default(true)
+  details        Json?
+  errorCode      String?  @map("error_code") @db.VarChar(64)
+  durationMs     Int?     @map("duration_ms")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([sourceSystemId, tenantId, userId, createdAt])
+  @@index([sourceSystemId, tenantId, action, createdAt])
+  @@index([sourceSystemId, tenantId, resourceType, resourceId])
+  @@map("knowledge_audit_events")
+}
