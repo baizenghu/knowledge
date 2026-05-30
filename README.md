@@ -7,6 +7,7 @@ This repository can be deployed independently. It does not need to run inside th
 ## Features
 
 - Document spaces, uploads, versioning, ingestion jobs, and reindex jobs
+- MinerU-based document parsing for PDFs and layout-heavy documents
 - Parser adapter layer with mock and MinerU HTTP implementations
 - Embedding adapter layer with mock and BGE-M3 via Ollama implementations
 - Vector retrieval with in-memory and Qdrant HTTP adapters
@@ -51,6 +52,9 @@ KNOWLEDGE_SERVICE_PORT=8080
 KNOWLEDGE_SERVICE_TOKEN=replace-with-a-strong-token
 KNOWLEDGE_SOURCE_SYSTEM_ID=knowledge
 KNOWLEDGE_DATABASE_URL=mysql://user:password@host:3306/knowledge
+PARSER_PROVIDER=mineru
+MINERU_HTTP_ENDPOINT=http://mineru:8000
+MINERU_AUTH_TOKEN=replace-if-your-mineru-service-requires-auth
 ```
 
 Then run:
@@ -76,6 +80,17 @@ Run migrations before starting the container when using MySQL:
 pnpm prisma:migrate
 ```
 
+## MinerU Document Parsing
+
+Set `PARSER_PROVIDER=mineru` to use MinerU for document parsing. In this mode, PDFs and layout-heavy documents are routed to MinerU through `MinerUHttpAdapter`, while plain text-like files are handled by the lightweight text parser fallback.
+
+```bash
+PARSER_PROVIDER=mineru
+MINERU_HTTP_ENDPOINT=http://mineru:8000
+MINERU_AUTH_TOKEN=optional-token
+MINERU_TIMEOUT_MS=120000
+```
+
 ## Adapter Environment Variables
 
 - `EMBEDDING_PROVIDER=mock | bge-m3-ollama`
@@ -89,7 +104,7 @@ pnpm prisma:migrate
 - `LLM_PROVIDER=mock | openai-compatible`
 - `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`
 - `PARSER_PROVIDER=mock | mineru`
-- `MINERU_ENDPOINT`, `MINERU_AUTH_TOKEN`
+- `MINERU_HTTP_ENDPOINT`, `MINERU_AUTH_TOKEN`, `MINERU_TIMEOUT_MS`
 
 ## Tests
 
