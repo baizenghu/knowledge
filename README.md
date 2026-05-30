@@ -1,5 +1,7 @@
 # Knowledge Service
 
+English | [中文](README.zh-CN.md)
+
 Standalone enterprise knowledge-base service for document ingestion, ACL-aware search, hybrid retrieval, rerank, answer generation, citation resolution, evaluation, and operational metrics.
 
 This repository can be deployed independently. It does not need to run inside the Octopus monorepo.
