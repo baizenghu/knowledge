@@ -106,6 +106,53 @@ MINERU_TIMEOUT_MS=120000
 - `PARSER_PROVIDER=mock | mineru`
 - `MINERU_HTTP_ENDPOINT`, `MINERU_AUTH_TOKEN`, `MINERU_TIMEOUT_MS`
 
+## Replacing The Document Parser
+
+The parser is intentionally isolated behind `ParserAdapter`, so MinerU can be replaced without changing ingestion, chunking, embedding, search, or citation code.
+
+### Option 1: Replace By Configuration
+
+Use this when the new parser can expose a MinerU-compatible HTTP shape or can be wrapped by a small compatibility service.
+
+1. Keep the knowledge service unchanged.
+2. Run an adapter service that accepts the same request style as `MinerUHttpAdapter`.
+3. Point the parser endpoint to that adapter:
+
+```bash
+PARSER_PROVIDER=mineru
+MINERU_HTTP_ENDPOINT=http://your-parser-adapter:8000
+MINERU_AUTH_TOKEN=optional-token
+```
+
+This is the lowest-risk path for deployment because the knowledge service still receives normalized parser output through the existing MinerU adapter boundary.
+
+### Option 2: Add A Native Parser Adapter
+
+Use this when the replacement parser has its own API or output format.
+
+1. Create a new file under `services/knowledge/src/parser`, for example `docling-adapter.ts` or `unstructured-adapter.ts`.
+2. Implement `ParserAdapter` from `parser-adapter.ts`.
+3. Convert the parser response into `CanonicalDocument` from `canonical.ts`.
+4. Call `validateCanonicalDocument(document)` before returning success.
+5. Register the provider in `KnowledgeRuntimeOptions` and `resolveParser()` in `services/knowledge/src/runtime.ts`.
+6. Add environment variables, for example:
+
+```bash
+PARSER_PROVIDER=docling
+DOCLING_ENDPOINT=http://docling:8000
+DOCLING_AUTH_TOKEN=optional-token
+```
+
+The adapter must preserve these fields for downstream citation and retrieval quality: `nodeId`, `type`, `text`, `headingPath`, `page`, `bbox` or `charSpan`, `readingOrder`, and `markdown`.
+
+### Recommended Rollout
+
+1. Keep MinerU as the default parser for PDF and layout-heavy documents.
+2. Add the replacement parser under a new provider name.
+3. Run both parsers against the same evaluation dataset.
+4. Compare parse success rate, degraded rate, table extraction quality, heading structure, page/bbox citation accuracy, and downstream retrieval recall.
+5. Switch `PARSER_PROVIDER` only after the replacement parser matches or exceeds MinerU on the target document set.
+
 ## Tests
 
 ```bash
