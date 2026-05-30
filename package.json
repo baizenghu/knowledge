@@ -9,6 +9,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
+    "postinstall": "pnpm prisma:generate",
     "build": "pnpm prisma:generate && turbo build",
     "test": "turbo test",
     "dev": "pnpm --filter @octopus/knowledge-service dev",
