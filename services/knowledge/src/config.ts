@@ -28,7 +28,7 @@ export function loadKnowledgeServiceConfig(): KnowledgeServiceConfig {
   return {
     port: readNumber("KNOWLEDGE_SERVICE_PORT", 8080),
     serviceToken: process.env["KNOWLEDGE_SERVICE_TOKEN"] || "dev-knowledge-token",
-    sourceSystemId: process.env["KNOWLEDGE_SOURCE_SYSTEM_ID"] || "octopus",
+    sourceSystemId: process.env["KNOWLEDGE_SOURCE_SYSTEM_ID"] || "knowledge",
     databaseUrl: process.env["KNOWLEDGE_DATABASE_URL"],
     nonceTtlMs,
     clockSkewMs,

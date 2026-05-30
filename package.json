@@ -1,17 +1,18 @@
 {
-  "name": "octopus-knowledge",
+  "name": "knowledge-service",
   "version": "0.1.0",
   "private": true,
-  "description": "Octopus enterprise knowledge service export",
+  "description": "Standalone enterprise knowledge service",
   "type": "module",
   "packageManager": "pnpm@9.0.0",
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "turbo build",
+    "build": "pnpm prisma:generate && turbo build",
     "test": "turbo test",
     "dev": "pnpm --filter @octopus/knowledge-service dev",
+    "start": "pnpm --filter @octopus/knowledge-service start",
     "prisma:generate": "pnpm --filter @octopus/knowledge-service exec prisma generate --schema prisma/schema.prisma",
     "prisma:migrate": "pnpm --filter @octopus/knowledge-service exec prisma migrate deploy --schema prisma/schema.prisma"
   },
